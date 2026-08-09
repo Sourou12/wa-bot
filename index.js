@@ -7,7 +7,6 @@ const app = express();
 app.use(express.json());
 
 let isReady = false;
-let currentQr = null;
 
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -22,21 +21,30 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--unhandled-rejections=strict'
+            '--disable-software-rasterizer',
+            '--disable-extensions',
+            '--mute-audio',
+            '--no-default-browser-check',
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
+            '--disable-ipc-flooding-protection',
+            '--disable-renderer-backgrounding'
         ]
     }
 });
 
 client.on('qr', (qr) => {
     isReady = false;
-    currentQr = qr;
-    console.log('--- NOUVEAU QR CODE GENERE ---');
+    console.log('--- SCANNEZ CE QR CODE AVEC WHATSAPP ---');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
     isReady = true;
-    currentQr = null;
     console.log('Connecté à WhatsApp avec succès !');
 });
 
@@ -44,32 +52,25 @@ client.on('authenticated', () => {
     console.log('Authentification réussie !');
 });
 
-client.on('auth_failure', (msg) => {
-    isReady = false;
-    console.error('Échec de l\'authentification :', msg);
-});
-
 client.on('disconnected', (reason) => {
     isReady = false;
     console.log('Client déconnecté :', reason);
-    // Relance l'initialisation si déconnecté
-    client.initialize();
 });
 
-// Route pour vérifier le statut de santé du serveur
+// Route de statut de santé
 app.get('/', (req, res) => {
     res.json({
-        status: isReady ? 'connected' : 'connecting_or_waiting_qr',
+        status: isReady ? 'connected' : 'waiting_qr_or_loading',
         message: isReady ? 'Le bot WhatsApp est prêt !' : 'En attente de connexion WhatsApp...'
     });
 });
 
-// Route POST pour envoyer le message
+// Route d'envoi de message
 app.post('/send-message', async (req, res) => {
     if (!isReady) {
         return res.status(503).json({ 
             status: 'error', 
-            error: 'Le client WhatsApp n\'est pas encore prêt. Allez sur https://wa-bot-rlrx.onrender.com/ pour vérifier le statut.' 
+            error: 'Le client WhatsApp n\'est pas encore prêt. Vérifiez https://wa-bot-rlrx.onrender.com/' 
         });
     }
 
