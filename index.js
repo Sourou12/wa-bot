@@ -1,14 +1,15 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
+const puppeteer = require('puppeteer');
 
 const app = express();
 app.use(express.json());
 
-// Configuration du client WhatsApp avec arguments headless pour le Cloud
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
+        executablePath: puppeteer.executablePath(),
         headless: true,
         args: [
             '--no-sandbox',
@@ -22,18 +23,15 @@ const client = new Client({
     }
 });
 
-// Affichage du QR code dans le terminal/logs
 client.on('qr', (qr) => {
     console.log('--- SCANNEZ CE QR CODE AVEC WHATSAPP ---');
     qrcode.generate(qr, { small: true });
 });
 
-// Confirmation de connexion
 client.on('ready', () => {
     console.log('Connecté à WhatsApp avec succès !');
 });
 
-// Route POST pour envoyer un message
 app.post('/send-message', async (req, res) => {
     const { number, message } = req.body;
     try {
@@ -47,6 +45,5 @@ app.post('/send-message', async (req, res) => {
 
 client.initialize();
 
-// Gestion dynamique du port pour Render / Heroku / Local
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Serveur démarré sur le port ${PORT}`));
