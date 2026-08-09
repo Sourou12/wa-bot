@@ -7,8 +7,8 @@ const app = express();
 app.use(express.json());
 
 let isReady = false;
+let currentQr = null;
 
-// Client WhatsApp avec Chromium ultra-optimisé pour les conteneurs à mémoire restreinte
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -21,33 +21,55 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process', // Réduit fortement l'usage de la mémoire RAM
-            '--disable-gpu'
+            '--disable-gpu',
+            '--unhandled-rejections=strict'
         ]
     }
 });
 
 client.on('qr', (qr) => {
     isReady = false;
-    console.log('--- SCANNEZ CE QR CODE AVEC WHATSAPP ---');
+    currentQr = qr;
+    console.log('--- NOUVEAU QR CODE GENERE ---');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
     isReady = true;
+    currentQr = null;
     console.log('Connecté à WhatsApp avec succès !');
+});
+
+client.on('authenticated', () => {
+    console.log('Authentification réussie !');
+});
+
+client.on('auth_failure', (msg) => {
+    isReady = false;
+    console.error('Échec de l\'authentification :', msg);
 });
 
 client.on('disconnected', (reason) => {
     isReady = false;
     console.log('Client déconnecté :', reason);
+    // Relance l'initialisation si déconnecté
+    client.initialize();
 });
 
+// Route pour vérifier le statut de santé du serveur
+app.get('/', (req, res) => {
+    res.json({
+        status: isReady ? 'connected' : 'connecting_or_waiting_qr',
+        message: isReady ? 'Le bot WhatsApp est prêt !' : 'En attente de connexion WhatsApp...'
+    });
+});
+
+// Route POST pour envoyer le message
 app.post('/send-message', async (req, res) => {
     if (!isReady) {
         return res.status(503).json({ 
             status: 'error', 
-            error: 'Le client WhatsApp est en cours d\'initialisation. Patientez quelques secondes.' 
+            error: 'Le client WhatsApp n\'est pas encore prêt. Allez sur https://wa-bot-rlrx.onrender.com/ pour vérifier le statut.' 
         });
     }
 
@@ -65,7 +87,7 @@ app.post('/send-message', async (req, res) => {
         await client.sendMessage(formattedNumber, message);
         res.json({ status: 'success', message: 'Message envoyé !' });
     } catch (error) {
-        console.error('Erreur d\'envoi :', error);
+        console.error('Erreur lors de l\'envoi :', error);
         res.status(500).json({ status: 'error', error: error.message });
     }
 });
