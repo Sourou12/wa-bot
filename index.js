@@ -1,7 +1,6 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
-const http = require('http');
 
 const app = express();
 app.use(express.json());
@@ -17,7 +16,7 @@ async function connectToWhatsApp() {
             auth: state,
             printQRInTerminal: false,
             browser: ["Ecole Marie Auxiliatrice", "Chrome", "1.0.0"],
-            keepAliveIntervalMs: 30000, // Envoie des pings réseau à WhatsApp toutes les 30 secondes
+            keepAliveIntervalMs: 30000, // Envoie des pings réseau à WhatsApp toutes les 30s
             connectTimeoutMs: 60000
         });
 
@@ -37,15 +36,10 @@ async function connectToWhatsApp() {
             if (connection === 'close') {
                 isReady = false;
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                
-                // Si la déconnexion n'est pas une déconnexion volontaire du téléphone
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 console.log(`Connexion fermée (Code: ${statusCode}). Reconnexion :`, shouldReconnect);
-                
                 if (shouldReconnect) {
-                    setTimeout(connectToWhatsApp, 5000); // Tente de se reconnecter après 5s
-                } else {
-                    console.log('⚠️ Vous avez été déconnecté manuellement de WhatsApp.');
+                    setTimeout(connectToWhatsApp, 5000);
                 }
             } else if (connection === 'open') {
                 isReady = true;
@@ -59,15 +53,20 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// Route 1 : Vérification de statut (Ping)
+// Route 1 : Ping dédié pour Cron-Job / UptimeRobot
+app.get('/ping', (req, res) => {
+    res.status(200).send('pong');
+});
+
+// Route 2 : Vérification du statut global du bot
 app.get('/', (req, res) => {
     res.json({
         status: isReady ? 'connected' : 'waiting_qr',
-        message: isReady ? 'Le bot WhatsApp est prêt !' : 'En attente du scan du QR Code...'
+        message: isReady ? 'Le bot WhatsApp est prêt !' : 'En attente du scan du QR Code dans les logs Render...'
     });
 });
 
-// Route 2 : Envoi de message
+// Route 3 : Envoi de message WhatsApp
 app.post('/send-message', async (req, res) => {
     if (!isReady) {
         return res.status(503).json({
@@ -87,6 +86,7 @@ app.post('/send-message', async (req, res) => {
     }
 
     try {
+        // Nettoyage et formatage Bénin (+229)
         let cleanNumber = String(rawNumber).replace(/[^0-9]/g, '');
 
         if (cleanNumber.length === 10 && cleanNumber.startsWith('01')) {
@@ -109,6 +109,7 @@ app.post('/send-message', async (req, res) => {
 
         const result = await sock.sendMessage(targetJid, { text: message });
 
+        console.log(`[OK] Message envoyé à ${targetJid}`);
         return res.json({
             status: 'success',
             message: 'Message envoyé avec succès !',
@@ -123,18 +124,4 @@ app.post('/send-message', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Serveur prêt sur le port ${PORT}`);
-    
-    // Auto-Ping toutes les 10 minutes pour empêcher Render de s'endormir
-    const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
-    if (RENDER_URL) {
-        setInterval(() => {
-            http.get(RENDER_URL, (res) => {
-                console.log(`[Auto-Ping] Serveur maintenu éveillé (${res.statusCode})`);
-            }).on('error', (err) => {
-                console.error('[Auto-Ping Error]:', err.message);
-            });
-        }, 10 * 60 * 1000); // 10 minutes
-    }
-});
+app.listen(PORT, () => console.log(`Serveur démarré sur le port ${PORT}`));
