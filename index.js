@@ -212,19 +212,23 @@ app.post('/send-message', async (req, res) => {
     try {
         const recipientJid = formatNumber(rawNumber);
 
-        let targetJid = recipientJid;
+        // On envoie directement au JID qu'on a construit nous-mêmes (déjà au bon
+        // format béninois à 10 chiffres avec le préfixe "01"). On n'utilise plus
+        // le JID retourné par onWhatsApp() pour l'envoi : suite au changement de
+        // numérotation au Bénin (2024, ajout du préfixe "01"), WhatsApp renvoie
+        // parfois encore l'ANCIEN JID (8 chiffres) pour un contact déjà migré,
+        // ce qui fait échouer la délivrance silencieusement (erreur 463 en ack)
+        // même si le message est accepté localement.
         let existsOnWhatsApp = null;
         try {
             const [exists] = await sock.onWhatsApp(recipientJid);
             existsOnWhatsApp = !!(exists && exists.exists);
-            if (exists && exists.jid) {
-                targetJid = exists.jid;
-            }
-            console.log(`[CHECK] ${recipientJid} existe sur WhatsApp : ${existsOnWhatsApp}`);
+            console.log(`[CHECK] ${recipientJid} existe sur WhatsApp : ${existsOnWhatsApp} (JID retourné par WA : ${exists?.jid || 'aucun'})`);
         } catch (e) {
-            console.log('[CHECK] Vérification JID impossible (erreur) :', e.message, '— envoi direct quand même à :', recipientJid);
+            console.log('[CHECK] Vérification JID impossible (erreur) :', e.message);
         }
 
+        const targetJid = recipientJid;
         const result = await sock.sendMessage(targetJid, { text: message });
 
         console.log(`[OK] Message envoyé à ${targetJid}`);
