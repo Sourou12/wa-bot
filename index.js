@@ -180,6 +180,15 @@ const DEFAULT_MIN_DELAY_SEC = 60;   // délai remonté : 45s était trop rapide/
 const DEFAULT_MAX_DELAY_SEC = 120;
 const MIN_ALLOWED_DELAY_SEC = 45;   // plancher : on refuse maintenant en dessous de 45s
 
+// Mode par lots (batch) : groupes de N messages avec un petit délai entre
+// chaque message DU MÊME groupe (jamais simultané), puis une vraie pause
+// plus longue entre deux groupes.
+const DEFAULT_BATCH_SIZE = 10;
+const DEFAULT_BATCH_PAUSE_MINUTES = 3;
+const MIN_ALLOWED_BATCH_PAUSE_MINUTES = 3;   // plancher pour la pause entre groupes
+const WITHIN_BATCH_MIN_DELAY_SEC = 8;        // délai mini entre 2 messages du même groupe
+const WITHIN_BATCH_MAX_DELAY_SEC = 20;       // délai maxi entre 2 messages du même groupe
+
 // Pause longue périodique pour casser le rythme "robotique" (comportement humain simulé)
 const LONG_BREAK_EVERY = 40;            // toutes les 40 messages...
 const LONG_BREAK_MIN_MINUTES = 8;
@@ -292,15 +301,21 @@ async function processBulkJob() {
         if (!isLastMessage) {
             const messagesSent = i - bulkJob.startIndex + 1;
             const dueForLongBreak = messagesSent > 0 && messagesSent % LONG_BREAK_EVERY === 0;
+            const dueForBatchPause = !dueForLongBreak && bulkJob.batchSize > 0 && messagesSent % bulkJob.batchSize === 0;
 
             let delayMs;
             if (dueForLongBreak) {
                 const minutes = LONG_BREAK_MIN_MINUTES + Math.random() * (LONG_BREAK_MAX_MINUTES - LONG_BREAK_MIN_MINUTES);
                 delayMs = Math.round(minutes * 60 * 1000);
                 console.log(`[BULK] Pause longue (${Math.round(minutes)} min) après ${messagesSent} messages pour casser le rythme...`);
+            } else if (dueForBatchPause) {
+                // Fin d'un groupe de N messages : vraie pause entre lots.
+                delayMs = Math.round(bulkJob.batchPauseMinutes * 60 * 1000);
+                console.log(`[BULK] Fin de lot (${bulkJob.batchSize} messages) — pause de ${bulkJob.batchPauseMinutes} min avant le lot suivant...`);
             } else {
-                delayMs = randomDelayMs(bulkJob.minDelaySec, bulkJob.maxDelaySec);
-                console.log(`[BULK] Prochain envoi dans ${Math.round(delayMs / 1000)}s...`);
+                // Délai court entre deux messages du MÊME lot — jamais simultané.
+                delayMs = randomDelayMs(WITHIN_BATCH_MIN_DELAY_SEC, WITHIN_BATCH_MAX_DELAY_SEC);
+                console.log(`[BULK] Prochain envoi (même lot) dans ${Math.round(delayMs / 1000)}s...`);
             }
 
             bulkJob.nextSendAt = Date.now() + delayMs;
@@ -342,6 +357,8 @@ app.post('/send-bulk-messages', (req, res) => {
     const minDelaySeconds = Number(req.body.minDelaySeconds) || DEFAULT_MIN_DELAY_SEC;
     const maxDelaySeconds = Number(req.body.maxDelaySeconds) || DEFAULT_MAX_DELAY_SEC;
     const dailyLimit = Number(req.body.dailyLimit) || DEFAULT_DAILY_LIMIT;
+    const batchSize = Number(req.body.batchSize) || DEFAULT_BATCH_SIZE;
+    const batchPauseMinutes = Number(req.body.batchPauseMinutes) || DEFAULT_BATCH_PAUSE_MINUTES;
 
     if (!Array.isArray(messages) || messages.length === 0) {
         return res.status(400).json({
@@ -372,6 +389,13 @@ app.post('/send-bulk-messages', (req, res) => {
         });
     }
 
+    if (batchPauseMinutes < MIN_ALLOWED_BATCH_PAUSE_MINUTES) {
+        return res.status(400).json({
+            status: 'error',
+            error: `batchPauseMinutes trop bas : un minimum de ${MIN_ALLOWED_BATCH_PAUSE_MINUTES} min est imposé entre deux lots.`
+        });
+    }
+
     if (!isReady || connectionOpenCount === 0) {
         return res.status(503).json({
             status: 'error',
@@ -391,6 +415,8 @@ app.post('/send-bulk-messages', (req, res) => {
         cancelled: false,
         minDelaySec: minDelaySeconds,
         maxDelaySec: maxDelaySeconds,
+        batchSize: batchSize,
+        batchPauseMinutes: batchPauseMinutes,
         dailyLimit: dailyLimit,
         sentToday: 0,
         currentDay: todayStr(),
@@ -412,7 +438,8 @@ app.post('/send-bulk-messages', (req, res) => {
         status: 'accepted',
         message: `Envoi en masse lancé pour ${bulkJob.items.length} messages.`,
         job_id: bulkJob.id,
-        delai_entre_messages: `${minDelaySeconds}-${maxDelaySeconds}s`,
+        mode: `lots de ${batchSize}, pause de ${batchPauseMinutes} min entre lots`,
+        delai_intra_lot: `${WITHIN_BATCH_MIN_DELAY_SEC}-${WITHIN_BATCH_MAX_DELAY_SEC}s`,
         plafond_quotidien: dailyLimit,
         etalement_estime_jours: estimatedDays,
         suivi: 'GET /bulk-status'
