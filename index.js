@@ -1,9 +1,99 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, initAuthCreds, BufferJSON, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
+
+// ============================================================
+//  SESSION BAILEYS PERSISTÉE SUR MONGODB (au lieu de fichiers)
+// ============================================================
+//
+// Sur Render, le disque local est éphémère : à chaque redémarrage/veille,
+// le dossier auth_info_baileys est perdu, ce qui force une reconnexion
+// "nouvel appareil" à chaque fois — l'une des causes de bannissement
+// qu'on avait identifiées. En stockant la session sur MongoDB Atlas
+// (persistant, externe à Render), la session survit aux redémarrages.
+//
+// Variable d'environnement requise sur Render :
+//   MONGO_URI = mongodb+srv://user:password@cluster.mongodb.net/dbname
+
+const MONGO_URI = process.env.MONGO_URI;
+if (!MONGO_URI) {
+    console.error("❌ ERREUR : la variable d'environnement MONGO_URI n'est pas définie sur Render.");
+    process.exit(1);
+}
+
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('✅ Connecté à MongoDB Atlas pour la session Baileys'))
+    .catch(err => console.error('❌ Erreur de connexion MongoDB :', err));
+
+const AuthSchema = new mongoose.Schema({ id: { type: String, unique: true }, data: String });
+const AuthModel = mongoose.model('AuthSession', AuthSchema);
+
+async function useMongoDBAuthState() {
+    const readData = async (id) => {
+        try {
+            const doc = await AuthModel.findOne({ id });
+            // BufferJSON.reviver est indispensable : les clés de session Baileys
+            // contiennent des Buffers, un JSON.parse standard les corromprait.
+            return doc ? JSON.parse(doc.data, BufferJSON.reviver) : null;
+        } catch (e) {
+            console.error(`Erreur de lecture MongoDB (${id}) :`, e.message);
+            return null;
+        }
+    };
+
+    const writeData = async (id, data) => {
+        try {
+            await AuthModel.updateOne(
+                { id },
+                { data: JSON.stringify(data, BufferJSON.replacer) },
+                { upsert: true }
+            );
+        } catch (e) {
+            console.error(`Erreur d'écriture MongoDB (${id}) :`, e.message);
+        }
+    };
+
+    const removeData = async (id) => {
+        try {
+            await AuthModel.deleteOne({ id });
+        } catch (e) {
+            console.error(`Erreur de suppression MongoDB (${id}) :`, e.message);
+        }
+    };
+
+    const creds = (await readData('creds')) || initAuthCreds();
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    for (const id of ids) {
+                        const value = await readData(`${type}-${id}`);
+                        if (value) data[id] = value;
+                    }
+                    return data;
+                },
+                set: async (data) => {
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const key = `${category}-${id}`;
+                            if (value) await writeData(key, value);
+                            else await removeData(key);
+                        }
+                    }
+                }
+            }
+        },
+        saveCreds: () => writeData('creds', creds)
+    };
+}
 
 let sock;
 let isReady = false;
@@ -11,17 +101,7 @@ let connectionOpenCount = 0; // compte les reconnexions depuis le démarrage du 
 
 async function connectToWhatsApp() {
     try {
-        const fs = require('fs');
-        const authFolderExisted = fs.existsSync('auth_info_baileys') && fs.readdirSync('auth_info_baileys').length > 0;
-        if (!authFolderExisted) {
-            console.warn('⚠️  ATTENTION : dossier auth_info_baileys vide ou absent au démarrage.');
-            console.warn('⚠️  Si ce n\'est pas la toute première installation, cela veut dire que');
-            console.warn('⚠️  votre session a été perdue (ex: disque éphémère sur Render gratuit)');
-            console.warn('⚠️  et que WhatsApp va voir ça comme un nouvel appareil qui se connecte.');
-            console.warn('⚠️  Des reconnexions répétées de ce type sont une cause fréquente de bannissement.');
-        }
-
-        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+        const { state, saveCreds } = await useMongoDBAuthState();
 
         sock = makeWASocket({
             auth: state,
