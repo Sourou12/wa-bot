@@ -169,6 +169,26 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Fonction universelle pour envoyer un message
+// (utile si vous voulez appeler l'envoi directement depuis d'autres parties
+// du code sans passer par une route HTTP)
+async function envoyerMessage(sock, numero, texte) {
+    try {
+        // Nettoie le numéro (enlève espaces, +, etc.)
+        let jid = numero.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
+
+        // Si c'est le même numéro que le bot, utiliser le JID de l'utilisateur connecté
+        const monNumero = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+        if (jid === monNumero) {
+            jid = sock.user.id;
+        }
+        await sock.sendMessage(jid, { text: texte });
+        console.log(`✅ Message livré à ${jid}`);
+    } catch (err) {
+        console.error(`❌ Échec d'envoi à ${numero}:`, err);
+    }
+}
+
 // Utilitaire : délai aléatoire entier entre min et max (secondes) -> ms
 function randomDelayMs(minSeconds, maxSeconds) {
     const min = Math.ceil(minSeconds);
