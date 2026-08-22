@@ -106,10 +106,11 @@ async function connectToWhatsApp() {
         sock = makeWASocket({
             auth: state,
             printQRInTerminal: false,
-            syncFullHistory: false, // 👈 Ignorer la synchronisation de l'historique lourd
+            syncFullHistory: false, // Ne pas charger l'historique lourd
             browser: ["Ecole Marie Auxiliatrice", "Chrome", "1.0.0"],
             keepAliveIntervalMs: 30000, // Envoie des pings réseau à WhatsApp toutes les 30s
-            connectTimeoutMs: 60000
+            connectTimeoutMs: 60000,    // Timeout de connexion à 60s
+            defaultQueryTimeoutMs: undefined // Pas de timeout global sur les requêtes (évite les "Timed Out" prématurés comme sur fetchProps)
         });
 
         sock.ev.on('creds.update', saveCreds);
