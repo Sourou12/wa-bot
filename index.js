@@ -213,13 +213,16 @@ app.post('/send-message', async (req, res) => {
         const recipientJid = formatNumber(rawNumber);
 
         let targetJid = recipientJid;
+        let existsOnWhatsApp = null;
         try {
             const [exists] = await sock.onWhatsApp(recipientJid);
+            existsOnWhatsApp = !!(exists && exists.exists);
             if (exists && exists.jid) {
                 targetJid = exists.jid;
             }
+            console.log(`[CHECK] ${recipientJid} existe sur WhatsApp : ${existsOnWhatsApp}`);
         } catch (e) {
-            console.log('Vérification JID ignorée, envoi direct à :', recipientJid);
+            console.log('[CHECK] Vérification JID impossible (erreur) :', e.message, '— envoi direct quand même à :', recipientJid);
         }
 
         const result = await sock.sendMessage(targetJid, { text: message });
@@ -228,6 +231,7 @@ app.post('/send-message', async (req, res) => {
         return res.json({
             status: 'success',
             message: 'Message envoyé avec succès !',
+            existe_sur_whatsapp: existsOnWhatsApp,
             jid_destinataire: targetJid,
             id_message: result?.key?.id
         });
