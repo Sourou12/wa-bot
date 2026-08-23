@@ -1,4 +1,5 @@
-const { default: makeWASocket, initAuthCreds, BufferJSON, DisconnectReason, proto } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
+const useMongoDBAuthState = require('baileys-mongodb-auth');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -6,91 +7,42 @@ const mongoose = require('mongoose');
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
-// 1. CONNEXION À MONGODB
-const MONGO_URI = process.env.MONGO_URI || 'votre_uri_mongodb_ici';
-
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('✅ Connexion à MongoDB réussie !'))
-  .catch((err) => console.error('❌ Erreur de connexion MongoDB :', err));
-
-// Modèle MongoDB pour stocker la session
-const AuthSchema = new mongoose.Schema({
-  _id: { type: String, required: true },
-  data: { type: String, required: true }
-});
-const AuthModel = mongoose.models.AuthState || mongoose.model('AuthState', AuthSchema);
-
-async function useMongoDBAuthState() {
-  const readData = async (id) => {
-    try {
-      const doc = await AuthModel.findById(id);
-      if (!doc) return null;
-      return JSON.parse(doc.data, BufferJSON.reviver);
-    } catch {
-      return null;
-    }
-  };
-
-  const writeData = async (id, data) => {
-    try {
-      const value = JSON.stringify(data, BufferJSON.replacer);
-      await AuthModel.findByIdAndUpdate(id, { data: value }, { upsert: true });
-    } catch (err) {
-      console.error(`Erreur écriture Mongo (${id}):`, err);
-    }
-  };
-
-  const removeData = async (id) => {
-    try {
-      await AuthModel.findByIdAndDelete(id);
-    } catch (err) {
-      console.error(`Erreur suppression Mongo (${id}):`, err);
-    }
-  };
-
-  const creds = (await readData('creds')) || initAuthCreds();
-
-  return {
-    state: {
-      creds,
-      keys: {
-        get: async (type, ids) => {
-          const data = {};
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(`${type}-${id}`);
-              if (type === 'app-state-sync-key' && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
-              data[id] = value;
-            })
-          );
-          return data;
-        },
-        set: async (data) => {
-          const tasks = [];
-          for (const category in data) {
-            for (const id in data[category]) {
-              const value = data[category][id];
-              const key = `${category}-${id}`;
-              tasks.push(value ? writeData(key, value) : removeData(key));
-            }
-          }
-          await Promise.all(tasks);
-        }
-      }
-    },
-    saveCreds: () => writeData('creds', creds)
-  };
-}
+const PORT = process.env.PORT || 10000;
+const MONGO_URI = process.env.MONGO_URI;
 
 let sock;
 let isReady = false;
 let connectionOpenCount = 0;
 
-async function connectToWhatsApp() {
+function formatNumber(rawNumber) {
+    let cleanNumber = String(rawNumber).replace(/[^0-9]/g, '');
+    if (cleanNumber.length === 10 && cleanNumber.startsWith('01')) {
+        cleanNumber = '229' + cleanNumber;
+    } else if (cleanNumber.length === 8) {
+        cleanNumber = '229' + cleanNumber;
+    }
+    return `${cleanNumber}@s.whatsapp.net`;
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function randomDelayMs(minSeconds, maxSeconds) {
+    const min = Math.ceil(minSeconds);
+    const max = Math.floor(maxSeconds);
+    const seconds = Math.floor(Math.random() * (max - min + 1)) + min;
+    return seconds * 1000;
+}
+
+// 1. INITIALISATION DU BOT WHATSAPP ET MONGODB
+async function startBot() {
     try {
-        const { state, saveCreds } = await useMongoDBAuthState();
+        console.log("Connexion à MongoDB Atlas...");
+        const mongoClient = await mongoose.connect(MONGO_URI);
+        const collection = mongoClient.connection.db.collection('auth_sessions');
+
+        const { state, saveCreds } = await useMongoDBAuthState(collection);
 
         sock = makeWASocket({
             auth: state,
@@ -121,7 +73,7 @@ async function connectToWhatsApp() {
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 console.log(`Connexion fermée (Code: ${statusCode}). Reconnexion :`, shouldReconnect);
                 if (shouldReconnect) {
-                    setTimeout(connectToWhatsApp, 5000);
+                    setTimeout(startBot, 5000);
                 }
             } else if (connection === 'open') {
                 isReady = true;
@@ -129,34 +81,14 @@ async function connectToWhatsApp() {
                 console.log(`✅ Connecté à WhatsApp avec succès via Baileys ! (connexion n°${connectionOpenCount})`);
             }
         });
+
     } catch (err) {
-        console.error('Erreur d\'initialisation Baileys :', err);
+        console.error('Erreur d\'initialisation du bot :', err);
+        setTimeout(startBot, 10000);
     }
 }
 
-connectToWhatsApp();
-
-function formatNumber(rawNumber) {
-    let cleanNumber = String(rawNumber).replace(/[^0-9]/g, '');
-    if (cleanNumber.length === 10 && cleanNumber.startsWith('01')) {
-        cleanNumber = '229' + cleanNumber;
-    } else if (cleanNumber.length === 8) {
-        cleanNumber = '229' + cleanNumber;
-    }
-    return `${cleanNumber}@s.whatsapp.net`;
-}
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function randomDelayMs(minSeconds, maxSeconds) {
-    const min = Math.ceil(minSeconds);
-    const max = Math.floor(maxSeconds);
-    const seconds = Math.floor(Math.random() * (max - min + 1)) + min;
-    return seconds * 1000;
-}
-
+// 2. ROUTES HTTP (EXPRESS)
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 app.get('/', (req, res) => {
@@ -194,7 +126,7 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-const MAX_BULK_MESSAGES = 1500;
+// 3. LOGIQUE D'ENVOI EN MASSE (BULK)
 const DEFAULT_MIN_DELAY_SEC = 60;
 const DEFAULT_MAX_DELAY_SEC = 120;
 const MIN_ALLOWED_DELAY_SEC = 45;
@@ -381,5 +313,8 @@ app.get('/bulk-results', (req, res) => {
     return res.json({ job_id: bulkJob.id, status: bulkJob.status, results: bulkJob.results });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Serveur démarré sur le port ${PORT}`));
+// 4. DÉMARRAGE DU SERVEUR
+app.listen(PORT, () => {
+    console.log(`Serveur Web prêt sur le port ${PORT}`);
+    startBot();
+});
