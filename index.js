@@ -6,6 +6,10 @@ const mongoose = require('mongoose');
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  next();
+});
 const PORT = process.env.PORT || 10000;
 const MONGO_URI = process.env.MONGO_URI;
 
