@@ -25,9 +25,25 @@ if (!MONGO_URI) {
     process.exit(1);
 }
 
-mongoose.connect(MONGO_URI)
+// Erreur immédiate et explicite au lieu d'attendre 10s de "buffering timeout"
+// à chaque requête tant que Mongoose n'est pas connecté.
+mongoose.set('bufferCommands', false);
+
+mongoose.connect(MONGO_URI, {
+    serverSelectionTimeoutMS: 8000 // échoue vite et clairement plutôt que de traîner
+})
     .then(() => console.log('✅ Connecté à MongoDB Atlas pour la session Baileys'))
-    .catch(err => console.error('❌ Erreur de connexion MongoDB :', err));
+    .catch(err => console.error('❌ ÉCHEC DE CONNEXION MONGODB AU DÉMARRAGE :', err.message));
+
+mongoose.connection.on('error', (err) => {
+    console.error('❌ ERREUR MONGODB (en cours de fonctionnement) :', err.message);
+});
+mongoose.connection.on('disconnected', () => {
+    console.warn('⚠️  MongoDB déconnecté.');
+});
+mongoose.connection.on('connected', () => {
+    console.log('✅ Mongoose "connected" event — connexion confirmée.');
+});
 
 const AuthSchema = new mongoose.Schema({ id: { type: String, unique: true }, data: String });
 const AuthModel = mongoose.model('AuthSession', AuthSchema);
