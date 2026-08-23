@@ -1,5 +1,4 @@
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
-const useMongoDBAuthState = require('baileys-mongodb-auth');
+const { default: makeWASocket, initAuthCreds, BufferJSON, DisconnectReason, proto } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -13,6 +12,77 @@ const MONGO_URI = process.env.MONGO_URI;
 let sock;
 let isReady = false;
 let connectionOpenCount = 0;
+
+// Modèle MongoDB pour la session Baileys
+const AuthSchema = new mongoose.Schema({
+  _id: { type: String, required: true },
+  data: { type: String, required: true }
+});
+const AuthModel = mongoose.models.AuthState || mongoose.model('AuthState', AuthSchema);
+
+async function useMongoDBAuthState() {
+  const readData = async (id) => {
+    try {
+      const doc = await AuthModel.findById(id);
+      if (!doc) return null;
+      return JSON.parse(doc.data, BufferJSON.reviver);
+    } catch {
+      return null;
+    }
+  };
+
+  const writeData = async (id, data) => {
+    try {
+      const value = JSON.stringify(data, BufferJSON.replacer);
+      await AuthModel.findByIdAndUpdate(id, { data: value }, { upsert: true });
+    } catch (err) {
+      console.error(`Erreur écriture Mongo (${id}):`, err);
+    }
+  };
+
+  const removeData = async (id) => {
+    try {
+      await AuthModel.findByIdAndDelete(id);
+    } catch (err) {
+      console.error(`Erreur suppression Mongo (${id}):`, err);
+    }
+  };
+
+  const creds = (await readData('creds')) || initAuthCreds();
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (type, ids) => {
+          const data = {};
+          await Promise.all(
+            ids.map(async (id) => {
+              let value = await readData(`${type}-${id}`);
+              if (type === 'app-state-sync-key' && value) {
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              }
+              data[id] = value;
+            })
+          );
+          return data;
+        },
+        set: async (data) => {
+          const tasks = [];
+          for (const category in data) {
+            for (const id in data[category]) {
+              const value = data[category][id];
+              const key = `${category}-${id}`;
+              tasks.push(value ? writeData(key, value) : removeData(key));
+            }
+          }
+          await Promise.all(tasks);
+        }
+      }
+    },
+    saveCreds: () => writeData('creds', creds)
+  };
+}
 
 function formatNumber(rawNumber) {
     let cleanNumber = String(rawNumber).replace(/[^0-9]/g, '');
@@ -35,14 +105,13 @@ function randomDelayMs(minSeconds, maxSeconds) {
     return seconds * 1000;
 }
 
-// 1. INITIALISATION DU BOT WHATSAPP ET MONGODB
+// Initialisation Bot
 async function startBot() {
     try {
         console.log("Connexion à MongoDB Atlas...");
-        const mongoClient = await mongoose.connect(MONGO_URI);
-        const collection = mongoClient.connection.db.collection('auth_sessions');
+        await mongoose.connect(MONGO_URI);
 
-        const { state, saveCreds } = await useMongoDBAuthState(collection);
+        const { state, saveCreds } = await useMongoDBAuthState();
 
         sock = makeWASocket({
             auth: state,
@@ -88,7 +157,7 @@ async function startBot() {
     }
 }
 
-// 2. ROUTES HTTP (EXPRESS)
+// Routes Express
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 app.get('/', (req, res) => {
@@ -126,7 +195,7 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// 3. LOGIQUE D'ENVOI EN MASSE (BULK)
+// Logique Bulk Send
 const DEFAULT_MIN_DELAY_SEC = 60;
 const DEFAULT_MAX_DELAY_SEC = 120;
 const MIN_ALLOWED_DELAY_SEC = 45;
@@ -313,7 +382,6 @@ app.get('/bulk-results', (req, res) => {
     return res.json({ job_id: bulkJob.id, status: bulkJob.status, results: bulkJob.results });
 });
 
-// 4. DÉMARRAGE DU SERVEUR
 app.listen(PORT, () => {
     console.log(`Serveur Web prêt sur le port ${PORT}`);
     startBot();
