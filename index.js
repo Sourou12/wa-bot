@@ -6,10 +6,17 @@ const mongoose = require('mongoose');
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  next();
+// Middleware CORS pour autoriser votre site web
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
 });
+
 const PORT = process.env.PORT || 10000;
 const MONGO_URI = process.env.MONGO_URI;
 
@@ -19,73 +26,73 @@ let connectionOpenCount = 0;
 
 // Modèle MongoDB pour la session Baileys
 const AuthSchema = new mongoose.Schema({
-  _id: { type: String, required: true },
-  data: { type: String, required: true }
+    _id: { type: String, required: true },
+    data: { type: String, required: true }
 });
 const AuthModel = mongoose.models.AuthState || mongoose.model('AuthState', AuthSchema);
 
 async function useMongoDBAuthState() {
-  const readData = async (id) => {
-    try {
-      const doc = await AuthModel.findById(id);
-      if (!doc) return null;
-      return JSON.parse(doc.data, BufferJSON.reviver);
-    } catch {
-      return null;
-    }
-  };
-
-  const writeData = async (id, data) => {
-    try {
-      const value = JSON.stringify(data, BufferJSON.replacer);
-      await AuthModel.findByIdAndUpdate(id, { data: value }, { upsert: true });
-    } catch (err) {
-      console.error(`Erreur écriture Mongo (${id}):`, err);
-    }
-  };
-
-  const removeData = async (id) => {
-    try {
-      await AuthModel.findByIdAndDelete(id);
-    } catch (err) {
-      console.error(`Erreur suppression Mongo (${id}):`, err);
-    }
-  };
-
-  const creds = (await readData('creds')) || initAuthCreds();
-
-  return {
-    state: {
-      creds,
-      keys: {
-        get: async (type, ids) => {
-          const data = {};
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(`${type}-${id}`);
-              if (type === 'app-state-sync-key' && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
-              data[id] = value;
-            })
-          );
-          return data;
-        },
-        set: async (data) => {
-          const tasks = [];
-          for (const category in data) {
-            for (const id in data[category]) {
-              const value = data[category][id];
-              const key = `${category}-${id}`;
-              tasks.push(value ? writeData(key, value) : removeData(key));
-            }
-          }
-          await Promise.all(tasks);
+    const readData = async (id) => {
+        try {
+            const doc = await AuthModel.findById(id);
+            if (!doc) return null;
+            return JSON.parse(doc.data, BufferJSON.reviver);
+        } catch {
+            return null;
         }
-      }
-    },
-    saveCreds: () => writeData('creds', creds)
-  };
+    };
+
+    const writeData = async (id, data) => {
+        try {
+            const value = JSON.stringify(data, BufferJSON.replacer);
+            await AuthModel.findByIdAndUpdate(id, { data: value }, { upsert: true });
+        } catch (err) {
+            console.error(`Erreur écriture Mongo (${id}):`, err);
+        }
+    };
+
+    const removeData = async (id) => {
+        try {
+            await AuthModel.findByIdAndDelete(id);
+        } catch (err) {
+            console.error(`Erreur suppression Mongo (${id}):`, err);
+        }
+    };
+
+    const creds = (await readData('creds')) || initAuthCreds();
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            let value = await readData(`${type}-${id}`);
+                            if (type === 'app-state-sync-key' && value) {
+                                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                            }
+                            data[id] = value;
+                        })
+                    );
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const key = `${category}-${id}`;
+                            tasks.push(value ? writeData(key, value) : removeData(key));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => writeData('creds', creds)
+    };
 }
 
 function formatNumber(rawNumber) {
@@ -199,7 +206,7 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// Logique Bulk Send
+// Envoi en masse (Bulk)
 const DEFAULT_MIN_DELAY_SEC = 60;
 const DEFAULT_MAX_DELAY_SEC = 120;
 const MIN_ALLOWED_DELAY_SEC = 45;
